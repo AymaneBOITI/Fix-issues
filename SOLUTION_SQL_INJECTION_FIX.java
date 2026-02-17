@@ -308,50 +308,235 @@ import java.util.List;
 // ║  Modifier les constructeurs : String → List<String>                        ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
-// ResponseProcessor :
-    // AVANT :
-    public ResponseProcessor(String branchesCondition, IPaymentSqlHandler sqlHandler, ...) {
-        this.branchesCondition = branchesCondition;
-    }
-    // APRÈS :
-    public ResponseProcessor(List<String> branches, IPaymentSqlHandler sqlHandler, ...) {
-        this.branches = branches;
-    }
-    // + changer le champ String branchesCondition → List<String> branches
-    // + corriger tous les endroits qui utilisent branchesCondition dans du SQL
-    //   avec le même pattern: buildInClause() + toParams()
+// ==================== PaymentProcessor.java ====================
+// Champ ligne 41 : String branchesCondition → List<String> branches
+// 2 constructeurs + buildNewPayments() à modifier
 
-// PaymentProcessor :
-    // Même chose : String branchesCondition → List<String> branches
+    // ── Champ ──
+    // AVANT :
+    private final String branchesCondition;  // 3 usages
+    // APRÈS :
+    private final List<String> branches;     // (ajouter import java.util.List)
+
+
+    // ── Constructeur 1 (ligne ~47) ──
+    // AVANT :
+    public PaymentProcessor(InterfaceParameter param, String branchesCondition,
+                            IPaymentSqlHandler sqlHandler, IMessageMqService mqService,
+                            IAuditHandler auditHandler, IPaymentController paymentController)
+            throws VarEnvException {
+        this.param = param;
+        this.sqlHandler = sqlHandler;
+        this.mqService = mqService;
+        this.branchesCondition = branchesCondition;
+        // ...
+    }
+
+    // APRÈS :
+    public PaymentProcessor(InterfaceParameter param, List<String> branches,
+                            IPaymentSqlHandler sqlHandler, IMessageMqService mqService,
+                            IAuditHandler auditHandler, IPaymentController paymentController)
+            throws VarEnvException {
+        this.param = param;
+        this.sqlHandler = sqlHandler;
+        this.mqService = mqService;
+        this.branches = branches;
+        // ...
+    }
+
+
+    // ── Constructeur 2 (ligne ~60) ──
+    // AVANT :
+    public PaymentProcessor(String branchesCondition, IPaymentSqlHandler sqlHandler,
+                            IMessageMqService mqService, IAuditHandler auditHandler,
+                            IPaymentController paymentController)
+            throws VarEnvException {
+        this.sqlHandler = sqlHandler;
+        this.mqService = mqService;
+        this.branchesCondition = branchesCondition;
+        // ...
+    }
+
+    // APRÈS :
+    public PaymentProcessor(List<String> branches, IPaymentSqlHandler sqlHandler,
+                            IMessageMqService mqService, IAuditHandler auditHandler,
+                            IPaymentController paymentController)
+            throws VarEnvException {
+        this.sqlHandler = sqlHandler;
+        this.mqService = mqService;
+        this.branches = branches;
+        // ...
+    }
+
+
+    // ── buildNewPayments() (ligne ~73) — CRITIQUE ──
+    // AVANT :
+    List<Payment> newPayments = this.sqlHandler.getNewPayments(this.branchesCondition);
+    // APRÈS :
+    List<Payment> newPayments = this.sqlHandler.getNewPayments(this.branches);
+
+
+// ==================== ResponseProcessor.java ====================
+// Le branchCondition est stocké mais N'EST PAS utilisé dans des requêtes SQL
+// directement. Il faut quand même changer le type pour la cohérence
+// et couper la propagation du "tainted data" vue par Fortify.
+
+    // ── Champ (ligne 12) ──
+    // AVANT :
+    private final String branchCondition;  // 3 usages
+    // APRÈS :
+    private final List<String> branches;
+
+
+    // ── Constructeur (ligne ~37) ──
+    // AVANT :
+    public ResponseProcessor(String branchCondition, IPaymentSqlHandler sqlHandler,
+                            IMessageMqService mqService,
+                            IAuditHandler logHandler) {
+        this.branchCondition = branchCondition;
+        this.sqlHandler = sqlHandler;
+        this.mqService = mqService;
+        this.auditHandler = logHandler;
+    }
+
+    // APRÈS :
+    public ResponseProcessor(List<String> branches, IPaymentSqlHandler sqlHandler,
+                            IMessageMqService mqService,
+                            IAuditHandler logHandler) {
+        this.branches = branches;
+        this.sqlHandler = sqlHandler;
+        this.mqService = mqService;
+        this.auditHandler = logHandler;
+    }
+
+    // Si branchCondition est utilisé quelque part dans ResponseProcessor
+    // dans du SQL, appliquer le même pattern buildInClause() + toParams().
+    // ⚠️ OUI, branchCondition EST utilisé dans 2 appels SQL :
+
+    // ── processAckNackFromItl() ligne ~95 ──
+    // AVANT :
+    nbNack = this.sqlHandler.updatePendingSwiftMsgtoFailInDB(this.branchCondition);
+    // APRÈS :
+    nbNack = this.sqlHandler.updatePendingSwiftMsgtoFailInDB(this.branches);
+
+    // ── processItlAck() ligne ~117 ──
+    // AVANT :
+    String msgKey = this.sqlHandler.getMsgKeyForItl(this.branchCondition, day, seq);
+    // APRÈS :
+    String msgKey = this.sqlHandler.getMsgKeyForItl(this.branches, day, seq);
+
+
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  ÉTAPE 7 : PaymentSqlHandler.java — 2 méthodes supplémentaires            ║
+// ║  updatePendingSwiftMsgtoFailInDB() et getMsgKeyForItl()                    ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
+// Il faut me montrer ces 2 méthodes dans PaymentSqlHandler.java pour que je
+// puisse écrire la correction exacte. Mais le pattern sera le même :
+
+// ==================== updatePendingSwiftMsgtoFailInDB() ====================
+
+    // AVANT (probable) :
+    @Override
+    public int updatePendingSwiftMsgtoFailInDB(String branchCondition) throws PaymentException {
+        // utilise probablement String.format(SOME_QUERY, branchCondition) ou
+        // concatène branchCondition dans la requête
+    }
+
+    // APRÈS :
+    @Override
+    public int updatePendingSwiftMsgtoFailInDB(List<String> branches) throws PaymentException {
+        String query = UPDATE_PENDING_QUERY + buildInClause(branches.size());
+        // ou le nom exact de la constante SQL
+        Object[] params = toParams(branches);
+        updateQuery(query, params);  // ou prepareStatement selon l'implem
+    }
+
+
+// ==================== getMsgKeyForItl() ====================
+
+    // AVANT (probable) :
+    @Override
+    public String getMsgKeyForItl(String branchCondition, String day, String seq) throws PaymentException {
+        // utilise probablement String.format(SOME_QUERY, branchCondition)
+        // avec day et seq comme paramètres supplémentaires
+    }
+
+    // APRÈS :
+    @Override
+    public String getMsgKeyForItl(List<String> branches, String day, String seq) throws PaymentException {
+        String query = GET_MSG_KEY_QUERY + buildInClause(branches.size());
+        // Fusionner les paramètres branches + day + seq :
+        Object[] branchParams = toParams(branches);
+        Object[] allParams = new Object[branchParams.length + 2];
+        System.arraycopy(branchParams, 0, allParams, 0, branchParams.length);
+        allParams[branchParams.length] = day;
+        allParams[branchParams.length + 1] = seq;
+        // Attention: l'ordre des ? dans la requête doit correspondre !
+        // Si branchCondition est à la fin de la query, mettre day/seq d'abord
+        try (PreparedStatement ps = this.prepareStatement(query, allParams);
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) {
+                return rs.getString("MSG_KEY");
+            }
+        }
+        return null;
+    }
+
+
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  ÉTAPE 8 : IPaymentSqlHandler.java — Signatures supplémentaires           ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
+    // AJOUTER/MODIFIER dans l'interface :
+    // AVANT :
+    int updatePendingSwiftMsgtoFailInDB(String branchCondition) throws PaymentException;
+    String getMsgKeyForItl(String branchCondition, String day, String seq) throws PaymentException;
+
+    // APRÈS :
+    int updatePendingSwiftMsgtoFailInDB(List<String> branches) throws PaymentException;
+    String getMsgKeyForItl(List<String> branches, String day, String seq) throws PaymentException;
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  RÉSUMÉ DES MODIFICATIONS                                                  ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 /*
-  ╔═════════════════════════════════════╦════════════════════════════════════════╗
-  ║ FICHIER                            ║ MODIFICATION                          ║
-  ╠═════════════════════════════════════╬════════════════════════════════════════╣
-  ║ SqlHandler.java                    ║ + buildInClause() et toParams()       ║
-  ║                                    ║ + imports Collections, List           ║
-  ╠═════════════════════════════════════╬════════════════════════════════════════╣
-  ║ Main.java                          ║ String branchesCondition → List<String>║
-  ║                                    ║ SUPPRIMER buildBranchCondition()      ║
-  ║                                    ║ Modifier initProcessors() et process()║
-  ╠═════════════════════════════════════╬════════════════════════════════════════╣
-  ║ PaymentSqlQueries.java             ║ Retirer %s de 8 constantes SQL        ║
-  ╠═════════════════════════════════════╬════════════════════════════════════════╣
-  ║ PaymentSqlHandler.java             ║ getNewPayments(List<String>)           ║
-  ║                                    ║ loadWorkingTables(List<String>)        ║
-  ║                                    ║ purgeWorkingTables(List<String>)       ║
-  ║                                    ║ buildInClause() + toParams() partout  ║
-  ╠═════════════════════════════════════╬════════════════════════════════════════╣
-  ║ IPaymentSqlHandler.java            ║ Signatures: String → List<String>     ║
-  ╠═════════════════════════════════════╬════════════════════════════════════════╣
-  ║ ResponseProcessor.java             ║ Constructeur: String → List<String>   ║
-  ╠═════════════════════════════════════╬════════════════════════════════════════╣
-  ║ PaymentProcessor.java              ║ Constructeur: String → List<String>   ║
-  ╚═════════════════════════════════════╩════════════════════════════════════════╝
+  ╔═════════════════════════════════════╦═══════════════════════════════════════════╗
+  ║ FICHIER                            ║ MODIFICATION                             ║
+  ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
+  ║ SqlHandler.java                    ║ + buildInClause() et toParams()          ║
+  ║                                    ║ + imports Collections, List              ║
+  ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
+  ║ Main.java                          ║ String branchesCondition → List<String>  ║
+  ║                                    ║ SUPPRIMER buildBranchCondition()         ║
+  ║                                    ║ Modifier initProcessors() et process()   ║
+  ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
+  ║ PaymentSqlQueries.java             ║ Retirer %s des constantes SQL            ║
+  ║                                    ║ (8+ constantes identifiées)              ║
+  ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
+  ║ PaymentSqlHandler.java             ║ getNewPayments(List<String>)             ║
+  ║                                    ║ loadWorkingTables(List<String>)          ║
+  ║                                    ║ purgeWorkingTables(List<String>)         ║
+  ║                                    ║ updatePendingSwiftMsgtoFailInDB(List)    ║
+  ║                                    ║ getMsgKeyForItl(List, day, seq)          ║
+  ║                                    ║ buildInClause() + toParams() partout     ║
+  ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
+  ║ IPaymentSqlHandler.java            ║ 5 signatures: String → List<String>     ║
+  ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
+  ║ PaymentProcessor.java              ║ Champ: String → List<String>            ║
+  ║                                    ║ 2 constructeurs: String → List<String>  ║
+  ║                                    ║ buildNewPayments(): passer branches     ║
+  ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
+  ║ IPaymentProcessor.java             ║ (si interface existe) adapter            ║
+  ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
+  ║ ResponseProcessor.java             ║ Champ: String → List<String>            ║
+  ║                                    ║ Constructeur: String → List<String>     ║
+  ║                                    ║ processAckNackFromItl(): passer branches ║
+  ║                                    ║ processItlAck(): passer branches        ║
+  ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
+  ║ IResponseProcessor.java            ║ (si interface existe) adapter            ║
+  ╚═════════════════════════════════════╩═══════════════════════════════════════════╝
 
   AUCUNE NOUVELLE CLASSE CRÉÉE. Tout est dans l'existant.
 */
