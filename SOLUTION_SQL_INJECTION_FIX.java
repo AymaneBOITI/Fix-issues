@@ -100,86 +100,72 @@ import java.util.List;
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  ÉTAPE 3 : PaymentSqlQueries.java — Retirer TOUS les %s                   ║
+// ║  ÉTAPE 3 : PaymentSqlQueries.java — SPLIT des constantes contenant %s     ║
+// ║                                                                            ║
+// ║  STRATÉGIE ZÉRO RISQUE : on coupe chaque constante avec %s en 2 morceaux  ║
+// ║  _P1 (avant le %s) et _P2 (après le %s). Aucun String.format() utilisé.   ║
+// ║  → Fortify ne peut JAMAIS flagger cette approche.                         ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
-// Pour CHAQUE constante ci-dessous, retirer le %s à la fin.
-// La clause IN (?, ?, ?) sera ajoutée dynamiquement dans PaymentSqlHandler.
+// ╔═══════════════════════════════════════════════════════════════════════════╗
+// ║  POUR CHAQUE CONSTANTE : couper exactement à l'endroit du %s            ║
+// ║                                                                         ║
+// ║  AVANT :  "...WHERE TRIM(X.COL) %s AND NOT EXISTS..."                   ║
+// ║                                  ↑↑                                     ║
+// ║  APRÈS :  _P1 = "...WHERE TRIM(X.COL) "                                ║
+// ║           _P2 = " AND NOT EXISTS..."                                    ║
+// ║                                                                         ║
+// ║  Si le %s est en toute FIN de la requête → _P2 = "" (chaîne vide)      ║
+// ╚═══════════════════════════════════════════════════════════════════════════╝
 
-// ──── 3a. SELECT_NEW_PAYMENTS ────
+// Exemple concret — SELECT_NEW_PAYMENTS (le %s est à la FIN) :
+//
+//  AVANT :
+//    public static final String SELECT_NEW_PAYMENTS =
+//        "SELECT ... WHERE TRIM(M.IMT_CDE_BRANCH) %s";
+//
+//  APRÈS :
+//    public static final String SELECT_NEW_PAYMENTS_P1 =
+//        "SELECT ... WHERE TRIM(M.IMT_CDE_BRANCH) ";
+//    public static final String SELECT_NEW_PAYMENTS_P2 = "";  // rien après
 
-    // AVANT :
-    "where TRIM(M.IMT_CDE_BRANCH) %s";
+// Exemple concret — INSERT_OUT_DIFF (le %s est au MILIEU) :
+//
+//  AVANT :
+//    public static final String INSERT_OUT_DIFF =
+//        "INSERT INTO ... WHERE TRIM(O.IMT_CDE_BRANCH) %s AND NOT EXISTS ...";
+//
+//  APRÈS :
+//    public static final String INSERT_OUT_DIFF_P1 =
+//        "INSERT INTO ... WHERE TRIM(O.IMT_CDE_BRANCH) ";
+//    public static final String INSERT_OUT_DIFF_P2 =
+//        " AND NOT EXISTS ...";
 
-    // APRÈS :
-    "where TRIM(M.IMT_CDE_BRANCH) ";
-
-
-// ──── 3b. INSERT_OUT_DIFF ────
-
-    // AVANT :
-    "and TRIM(O.IMT_CDE_BRANCH) %s" +
-    "and not exists (select T.IMT_RID_IMT_OUT from ...)";
-    // Note: le %s est au milieu, il faut remplacer JUSTE le %s
-    // Vérifier la position exacte dans votre code
-
-    // APRÈS :
-    // Retirer le %s, la clause IN sera insérée dynamiquement
-
-
-// ──── 3c. INSERT_ROLE_DIFF ────
-
-    // AVANT :
-    "and TRIM(OUT.IMT_CDE_BRANCH) %s" +
-
-    // APRÈS :
-    "and TRIM(OUT.IMT_CDE_BRANCH) " +
-
-
-// ──── 3d. INSERT_OUT_DATA ────
-
-    // AVANT :
-    "where TRIM(D.IMT_CDE_BRANCH) %s";
-
-    // APRÈS :
-    "where TRIM(D.IMT_CDE_BRANCH) ";
-
-
-// ──── 3e. INSERT_ROLE_DATA ────
-
-    // AVANT :
-    "where TRIM(D.IMT_CDE_BRANCH) %s";
-
-    // APRÈS :
-    "where TRIM(D.IMT_CDE_BRANCH) ";
-
-
-// ──── 3f. PURGE_OUT_DIFF ────
-
-    // AVANT :
-    "delete from "+LIQBATCHSCHEMA+".TBP_IPMT_IMT_OUT_DIFF where DF.IMT_RID_IMT_OUT IN (%s)";
-
-    // APRÈS :
-    "delete from "+LIQBATCHSCHEMA+".TBP_IPMT_IMT_OUT_DIFF where DF.IMT_RID_IMT_OUT IN (";
-    // On fermera la parenthèse dans PaymentSqlHandler après les placeholders
-
-
-// ──── 3g. PURGE_ROLE_DIFF ────
-    // Même pattern que PURGE_OUT_DIFF : retirer le %s du IN()
-
-
-// ──── 3h. SELECT_DE_MSG_KEY_FROM_HISTO ────
-
-    // AVANT :
-    "WHERE TRIM(H.IMT_CDE_BRANCH) %s ";
-
-    // APRÈS :
-    "WHERE TRIM(H.IMT_CDE_BRANCH) ";
+// ──── LISTE COMPLÈTE DES CONSTANTES À SPLITTER ────
+//
+//  1. SELECT_NEW_PAYMENTS       → SELECT_NEW_PAYMENTS_P1 + _P2
+//  2. INSERT_OUT_DIFF           → INSERT_OUT_DIFF_P1     + _P2
+//  3. INSERT_ROLE_DIFF          → INSERT_ROLE_DIFF_P1    + _P2
+//  4. INSERT_OUT_DATA           → INSERT_OUT_DATA_P1     + _P2
+//  5. INSERT_ROLE_DATA          → INSERT_ROLE_DATA_P1    + _P2
+//  6. PURGE_OUT_DIFF            → PURGE_OUT_DIFF_P1      + _P2
+//  7. PURGE_ROLE_DIFF           → PURGE_ROLE_DIFF_P1     + _P2
+//  8. SELECT_PENDING_SWIFT_MSG  → SELECT_PENDING_SWIFT_MSG_P1 + _P2
+//
+//  ⚠️ SELECT_KEY_USING_MSG_DAY_AND_SEQ : PAS DE SPLIT (pas de %s, concat directe)
+//     On remplace juste : CONSTANTE + branchCondition → CONSTANTE + buildInClause(n)
+//
+//  MODE D'EMPLOI : ouvrir la constante, trouver le %s, couper avant/après.
+//  Si _P2 est vide, mettre "" (il sera optimisé par le compilateur).
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║  ÉTAPE 4 : PaymentSqlHandler.java — Corriger les méthodes                  ║
-// ║  Remplacer String.format() par buildInClause() + toParams()               ║
+// ║  PATTERN UNIVERSEL (aucun String.format, aucun risque Fortify) :           ║
+// ║                                                                            ║
+// ║    String query = CONSTANTE_P1 + buildInClause(n) + CONSTANTE_P2;         ║
+// ║    Object[] params = toParams(branches);                                   ║
+// ║    prepareStatement(query, params);  // ou updateQuery(query, params)      ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
 // ==================== 4a. getNewPayments() (ligne ~168) ====================
@@ -189,9 +175,9 @@ import java.util.List;
     public List<Payment> getNewPayments(String branchCondition) throws SQLException {
         List<Payment> payments = new ArrayList<>();
         try (PreparedStatement ps = this.prepareStatement(
-                String.format(SELECT_NEW_PAYMENTS, branchCondition), null);
+                String.format(SELECT_NEW_PAYMENTS, branchCondition), null);  // ❌ INJECTION
              ResultSet rs = ps.executeQuery()) {
-            // ... mapping des colonnes ...
+            // ...
         }
     }
 
@@ -199,7 +185,8 @@ import java.util.List;
     @Override
     public List<Payment> getNewPayments(List<String> branches) throws SQLException {
         List<Payment> payments = new ArrayList<>();
-        String query = SELECT_NEW_PAYMENTS + buildInClause(branches.size());
+        String query = SELECT_NEW_PAYMENTS_P1 + buildInClause(branches.size()) + SELECT_NEW_PAYMENTS_P2;
+        //  → "select ... where TRIM(M.IMT_CDE_BRANCH) IN (?, ?, ?)"  (aucun String.format !)
         try (PreparedStatement ps = this.prepareStatement(query, toParams(branches));
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
@@ -224,7 +211,7 @@ import java.util.List;
                 payments.add(payment);
             }
         } catch (SQLException e) {
-            LOG.error("Could not get new payments with query " + SELECT_NEW_PAYMENTS, e);
+            LOG.error("Could not get new payments with query " + SELECT_NEW_PAYMENTS_P1, e);
             throw e;
         }
         return payments;
@@ -236,22 +223,22 @@ import java.util.List;
     // AVANT :
     @Override
     public void loadWorkingTables(String branchCondition) throws SQLException {
-        updateQuery(String.format(INSERT_OUT_DIFF, branchCondition), null);
-        updateQuery(String.format(INSERT_ROLE_DIFF, branchCondition), null);
-        updateQuery(String.format(INSERT_OUT_DATA, branchCondition), null);
-        updateQuery(String.format(INSERT_ROLE_DATA, branchCondition), null);
+        updateQuery(String.format(INSERT_OUT_DIFF, branchCondition), null);       // ❌
+        updateQuery(String.format(INSERT_ROLE_DIFF, branchCondition), null);      // ❌
+        updateQuery(String.format(INSERT_OUT_DATA, branchCondition), null);       // ❌
+        updateQuery(String.format(INSERT_ROLE_DATA, branchCondition), null);      // ❌
     }
 
     // APRÈS :
     @Override
     public void loadWorkingTables(List<String> branches) throws SQLException {
-        String inClause = buildInClause(branches.size());
+        String inClause = buildInClause(branches.size());  // "IN (?, ?, ?)"
         Object[] params = toParams(branches);
 
-        updateQuery(INSERT_OUT_DIFF + inClause, params);
-        updateQuery(INSERT_ROLE_DIFF + inClause, params);
-        updateQuery(INSERT_OUT_DATA + inClause, params);
-        updateQuery(INSERT_ROLE_DATA + inClause, params);
+        updateQuery(INSERT_OUT_DIFF_P1  + inClause + INSERT_OUT_DIFF_P2,  params);  // ✅ zéro String.format
+        updateQuery(INSERT_ROLE_DIFF_P1 + inClause + INSERT_ROLE_DIFF_P2, params);  // ✅
+        updateQuery(INSERT_OUT_DATA_P1  + inClause + INSERT_OUT_DATA_P2,  params);  // ✅
+        updateQuery(INSERT_ROLE_DATA_P1 + inClause + INSERT_ROLE_DATA_P2, params);  // ✅
     }
 
 
@@ -260,19 +247,18 @@ import java.util.List;
     // AVANT :
     @Override
     public void purgeWorkingTables(String branchCondition) throws SQLException {
-        updateQuery(String.format(PURGE_OUT_DIFF, branchCondition), null);
-        updateQuery(String.format(PURGE_ROLE_DIFF, branchCondition), null);
+        updateQuery(String.format(PURGE_OUT_DIFF, branchCondition), null);     // ❌
+        updateQuery(String.format(PURGE_ROLE_DIFF, branchCondition), null);    // ❌
     }
 
     // APRÈS :
     @Override
     public void purgeWorkingTables(List<String> branches) throws SQLException {
-        // Pour PURGE : la constante se termine par "IN (" donc on ajoute les ? et ")"
-        String placeholders = String.join(", ", Collections.nCopies(branches.size(), "?")) + ")";
+        String inClause = buildInClause(branches.size());
         Object[] params = toParams(branches);
 
-        updateQuery(PURGE_OUT_DIFF + placeholders, params);
-        updateQuery(PURGE_ROLE_DIFF + placeholders, params);
+        updateQuery(PURGE_OUT_DIFF_P1  + inClause + PURGE_OUT_DIFF_P2,  params);  // ✅ zéro String.format
+        updateQuery(PURGE_ROLE_DIFF_P1 + inClause + PURGE_ROLE_DIFF_P2, params);  // ✅
     }
 
 // Ne pas oublier l'import en haut de PaymentSqlHandler.java :
@@ -280,12 +266,19 @@ import java.util.List;
 
 
 // ==================== 4d. Toute autre méthode avec String.format + branchCondition ====================
-// Appliquer le MÊME pattern pour SELECT_DE_MSG_KEY_FROM_HISTO et tout
-// autre endroit qui utilise String.format avec %s et branchCondition.
-// Pattern universel :
-//   String query = CONSTANTE_SQL + buildInClause(branches.size());
-//   Object[] params = toParams(branches);
-//   this.prepareStatement(query, params);  // ou updateQuery(query, params);
+// ╔═══════════════════════════════════════════════════════════════════════╗
+// ║  PATTERN UNIVERSEL (ne plus jamais se poser la question) :           ║
+// ║                                                                      ║
+// ║    String inClause = buildInClause(branches.size());                 ║
+// ║    Object[] params = toParams(branches);                             ║
+// ║    String query = CONSTANTE_P1 + inClause + CONSTANTE_P2;            ║
+// ║    prepareStatement(query, params);  // ou updateQuery(query, params)║
+// ║                                                                      ║
+// ║  → ZÉRO String.format() dans le code → Fortify n'a RIEN à dire     ║
+// ║  → Les constantes SQL sont splitées en _P1 / _P2                     ║
+// ║  → On concatène "IN (?, ?, ?)" entre les 2 morceaux                  ║
+// ║  → Les vraies valeurs passent par setString() → SÉCURISÉ           ║
+// ╚═══════════════════════════════════════════════════════════════════════╝
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -431,57 +424,138 @@ import java.util.List;
 // ║  updatePendingSwiftMsgtoFailInDB() et getMsgKeyForItl()                    ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
-// Il faut me montrer ces 2 méthodes dans PaymentSqlHandler.java pour que je
-// puisse écrire la correction exacte. Mais le pattern sera le même :
+// Il faut aussi splitter SELECT_PENDING_SWIFT_MSG dans PaymentSqlQueries.java :
+//   SELECT_PENDING_SWIFT_MSG_P1 (avant %s) + SELECT_PENDING_SWIFT_MSG_P2 (après %s)
+//
+// Par contre SELECT_KEY_USING_MSG_DAY_AND_SEQ n'a PAS de %s (concaténation directe),
+// donc PAS de split nécessaire — on remplace juste la concat par buildInClause().
 
-// ==================== updatePendingSwiftMsgtoFailInDB() ====================
+// ==================== updatePendingSwiftMsgtoFailInDB() (ligne ~803) ====================
 
-    // AVANT (probable) :
+    // AVANT (VULNÉRABLE) :
     @Override
-    public int updatePendingSwiftMsgtoFailInDB(String branchCondition) throws PaymentException {
-        // utilise probablement String.format(SOME_QUERY, branchCondition) ou
-        // concatène branchCondition dans la requête
+    public Integer updatePendingSwiftMsgtoFailInDB(String branchCondition) throws PaymentException {
+        int nack = 0;
+        List<Payment> payments = new ArrayList<>();
+        try (PreparedStatement ps = this.prepareStatement(
+                String.format(SELECT_PENDING_SWIFT_MSG, branchCondition),  // ❌ INJECTION
+                new Object[]{STATUS_DELV});
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                Payment payment = new Payment();
+                payment.setMsgKey(rs.getString("MSG_KEY"));
+                payments.add(payment);
+            }
+        } catch (SQLException e) {
+            LOG.error("Could not get pending payments with query " + SELECT_PENDING_SWIFT_MSG, e);
+            throw new PaymentException("Could not get pending payments with query " + SELECT_PENDING_SWIFT_MSG, e);
+        }
+        for (Payment payment : payments) {
+            this.updateStatus(payment.getMsgKey(), STATUS_FAIL, "TIME_OUT");
+            nack++;
+        }
+        return nack;
     }
 
-    // APRÈS :
+    // APRÈS (SÉCURISÉ — zéro String.format) :
     @Override
-    public int updatePendingSwiftMsgtoFailInDB(List<String> branches) throws PaymentException {
-        String query = UPDATE_PENDING_QUERY + buildInClause(branches.size());
-        // ou le nom exact de la constante SQL
-        Object[] params = toParams(branches);
-        updateQuery(query, params);  // ou prepareStatement selon l'implem
+    public Integer updatePendingSwiftMsgtoFailInDB(List<String> branches) throws PaymentException {
+        int nack = 0;
+        List<Payment> payments = new ArrayList<>();
+
+        // Construire la query sans String.format :
+        String inClause = buildInClause(branches.size());  // "IN (?, ?, ?)"
+        String query = SELECT_PENDING_SWIFT_MSG_P1 + inClause + SELECT_PENDING_SWIFT_MSG_P2;
+
+        // Fusionner les params : STATUS_DELV (existant) + branches
+        // L'ordre dépend de la position des ? dans la requête :
+        //   "... WHERE status = ?₁ AND TRIM(branch) IN (?₂, ?₃, ?₄) ..."
+        //              STATUS_DELV↑                    ↑branches
+        Object[] branchParams = toParams(branches);
+        Object[] allParams = new Object[1 + branchParams.length];
+        allParams[0] = STATUS_DELV;  // le ? existant vient en premier
+        System.arraycopy(branchParams, 0, allParams, 1, branchParams.length);
+
+        try (PreparedStatement ps = this.prepareStatement(query, allParams);  // ✅ SAFE
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                Payment payment = new Payment();
+                payment.setMsgKey(rs.getString("MSG_KEY"));
+                payments.add(payment);
+            }
+        } catch (SQLException e) {
+            LOG.error("Could not get pending payments with query " + SELECT_PENDING_SWIFT_MSG_P1, e);
+            throw new PaymentException("Could not get pending payments with query " + SELECT_PENDING_SWIFT_MSG_P1, e);
+        }
+        for (Payment payment : payments) {
+            this.updateStatus(payment.getMsgKey(), STATUS_FAIL, "TIME_OUT");
+            nack++;
+        }
+        return nack;
     }
 
+    // ⚠️ IMPORTANT : vérifier l'ordre des ? dans SELECT_PENDING_SWIFT_MSG.
+    // Si le ? (STATUS_DELV) est APRÈS le %s dans la requête, inverser :
+    //   allParams = branches d'abord, puis STATUS_DELV à la fin.
 
-// ==================== getMsgKeyForItl() ====================
 
-    // AVANT (probable) :
+// ==================== getMsgKeyForItl() (ligne ~743) ====================
+
+    // AVANT (VULNÉRABLE — concaténation directe, pas String.format) :
     @Override
     public String getMsgKeyForItl(String branchCondition, String day, String seq) throws PaymentException {
-        // utilise probablement String.format(SOME_QUERY, branchCondition)
-        // avec day et seq comme paramètres supplémentaires
-    }
-
-    // APRÈS :
-    @Override
-    public String getMsgKeyForItl(List<String> branches, String day, String seq) throws PaymentException {
-        String query = GET_MSG_KEY_QUERY + buildInClause(branches.size());
-        // Fusionner les paramètres branches + day + seq :
-        Object[] branchParams = toParams(branches);
-        Object[] allParams = new Object[branchParams.length + 2];
-        System.arraycopy(branchParams, 0, allParams, 0, branchParams.length);
-        allParams[branchParams.length] = day;
-        allParams[branchParams.length + 1] = seq;
-        // Attention: l'ordre des ? dans la requête doit correspondre !
-        // Si branchCondition est à la fin de la query, mettre day/seq d'abord
-        try (PreparedStatement ps = this.prepareStatement(query, allParams);
+        String msgKey = null;
+        Object[] params = {day, seq, STATUS_DELV, STATUS_FAIL};
+        try (PreparedStatement ps = this.prepareStatement(
+                SELECT_KEY_USING_MSG_DAY_AND_SEQ + branchCondition,  // ❌ INJECTION
+                params);
              ResultSet rs = ps.executeQuery()) {
             if (rs.next()) {
-                return rs.getString("MSG_KEY");
+                msgKey = rs.getString("MSG_KEY");
             }
+        } catch (SQLException e) {
+            throw new PaymentException(
+                    "SQLError: Could not get MSG_KEY of ITL message with query " + SELECT_KEY_USING_MSG_DAY_AND_SEQ
+                    + branchCondition + " params " + Arrays.toString(params), e);
         }
-        return null;
+        return msgKey;
     }
+
+    // APRÈS (SÉCURISÉ — pas de split nécessaire car pas de %s) :
+    @Override
+    public String getMsgKeyForItl(List<String> branches, String day, String seq) throws PaymentException {
+        String msgKey = null;
+
+        // branchCondition était concaténé à la FIN → on remplace par buildInClause()
+        String query = SELECT_KEY_USING_MSG_DAY_AND_SEQ + buildInClause(branches.size());
+        //  → "...AND TRIM(branch) IN (?, ?, ?)"
+
+        // Les params existants {day, seq, STATUS_DELV, STATUS_FAIL} viennent AVANT
+        // car leurs ? sont dans la partie SELECT_KEY_USING_MSG_DAY_AND_SEQ.
+        // Les branches viennent APRÈS car le IN(?,?) est à la fin.
+        Object[] branchParams = toParams(branches);
+        Object[] allParams = new Object[4 + branchParams.length];
+        allParams[0] = day;
+        allParams[1] = seq;
+        allParams[2] = STATUS_DELV;
+        allParams[3] = STATUS_FAIL;
+        System.arraycopy(branchParams, 0, allParams, 4, branchParams.length);
+
+        try (PreparedStatement ps = this.prepareStatement(query, allParams);  // ✅ SAFE
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next()) {
+                msgKey = rs.getString("MSG_KEY");
+            }
+        } catch (SQLException e) {
+            throw new PaymentException(
+                    "SQLError: Could not get MSG_KEY of ITL message with query " + SELECT_KEY_USING_MSG_DAY_AND_SEQ
+                    + " params " + Arrays.toString(allParams), e);
+        }
+        return msgKey;
+    }
+
+// ⚠️ NOTE : SELECT_KEY_USING_MSG_DAY_AND_SEQ n'a PAS besoin d'être splitté
+// car il n'a pas de %s — la branchCondition était simplement concaténée à la fin.
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -490,11 +564,11 @@ import java.util.List;
 
     // AJOUTER/MODIFIER dans l'interface :
     // AVANT :
-    int updatePendingSwiftMsgtoFailInDB(String branchCondition) throws PaymentException;
+    Integer updatePendingSwiftMsgtoFailInDB(String branchCondition) throws PaymentException;
     String getMsgKeyForItl(String branchCondition, String day, String seq) throws PaymentException;
 
     // APRÈS :
-    int updatePendingSwiftMsgtoFailInDB(List<String> branches) throws PaymentException;
+    Integer updatePendingSwiftMsgtoFailInDB(List<String> branches) throws PaymentException;
     String getMsgKeyForItl(List<String> branches, String day, String seq) throws PaymentException;
 
 
@@ -512,15 +586,16 @@ import java.util.List;
   ║                                    ║ SUPPRIMER buildBranchCondition()         ║
   ║                                    ║ Modifier initProcessors() et process()   ║
   ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
-  ║ PaymentSqlQueries.java             ║ Retirer %s des constantes SQL            ║
-  ║                                    ║ (8+ constantes identifiées)              ║
+  ║ PaymentSqlQueries.java             ║ SPLIT des constantes avec %s :      ║
+  ║                                    ║ _P1 (avant %s) + _P2 (après %s)    ║
+  ║                                    ║ (8 constantes à splitter)           ║
   ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
   ║ PaymentSqlHandler.java             ║ getNewPayments(List<String>)             ║
   ║                                    ║ loadWorkingTables(List<String>)          ║
   ║                                    ║ purgeWorkingTables(List<String>)         ║
   ║                                    ║ updatePendingSwiftMsgtoFailInDB(List)    ║
   ║                                    ║ getMsgKeyForItl(List, day, seq)          ║
-  ║                                    ║ buildInClause() + toParams() partout     ║
+  ║                                    ║ CONCAT _P1 + buildInClause() + _P2      ║
   ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
   ║ IPaymentSqlHandler.java            ║ 5 signatures: String → List<String>     ║
   ╠═════════════════════════════════════╬═══════════════════════════════════════════╣
@@ -554,18 +629,20 @@ import java.util.List;
   │  prepareStatement("...WHERE branch in ('BR1','BR2')")← VULNÉRABLE    │
   └────────────────────────────────────────────────────────────────────────┘
 
-  APRÈS (SÉCURISÉ):
+  APRÈS (SÉCURISÉ - ZÉRO String.format):
   ┌────────────────────────────────────────────────────────────────────────┐
   │  getBranches() → ["BR1","BR2"]                                        │
-  │  query + buildInClause(2) → "...WHERE branch IN (?, ?)" ← SAFE       │
+  │  QUERY_P1 + buildInClause(2) + QUERY_P2                              │
+  │    → "...WHERE branch IN (?, ?) AND NOT EXISTS..."  ← SAFE           │
   │  toParams(branches) → Object[]{"BR1","BR2"}                           │
   │  prepareStatement(query, params)                                      │
   │  → ps.setString(1, "BR1");  ps.setString(2, "BR2")  ← PARAMÉTRÉ     │
   └────────────────────────────────────────────────────────────────────────┘
 
   ✅ Aucune donnée n'est jamais injectée dans le SQL
+  ✅ ZÉRO appel à String.format() avec des données taintées
   ✅ Tout passe par PreparedStatement avec setString()
-  ✅ Fortify ne détectera plus de SQL injection
+  ✅ Fortify ne détectera plus de SQL injection (impossible à flagger)
   ✅ Pas de nouvelle classe
   ✅ Impact minimal sur le code existant
 */
